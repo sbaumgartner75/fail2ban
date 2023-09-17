@@ -22,7 +22,7 @@
 __copyright__ = "Copyright (c) 2004 Cyril Jaquier; 2012 Yaroslav Halchenko"
 __license__ = "GPL"
 
-from __builtin__ import open as fopen
+from builtins import open as fopen
 import unittest
 import os
 import re
@@ -36,11 +36,12 @@ try:
 except ImportError:
 	journal = None
 
+from ..helpers import uni_bytes
 from ..server.jail import Jail
 from ..server.filterpoll import FilterPoll
 from ..server.filter import FailTicket, Filter, FileFilter, FileContainer
 from ..server.failmanager import FailManagerEmpty
-from ..server.ipdns import asip, getfqdn, DNSUtils, IPAddr
+from ..server.ipdns import asip, getfqdn, DNSUtils, IPAddr, IPAddrSet
 from ..server.mytime import MyTime
 from ..server.utils import Utils, uni_decode
 from .databasetestcase import getFail2BanDb
@@ -109,6 +110,7 @@ class _tmSerial():
 		return "%s%02u" % (c._str_s, sec)
 
 _tm = _tmSerial._tm
+_tmb = lambda t: uni_bytes(_tm(t))
 
 
 def _assert_equal_entries(utest, found, output, count=None):
@@ -141,7 +143,7 @@ def _ticket_tuple(ticket):
 	"""
 	attempts = ticket.getAttempt()
 	date = ticket.getTime()
-	ip = ticket.getIP()
+	ip = ticket.getID()
 	matches = ticket.getMatches()
 	return (ip, attempts, date, matches)
 
@@ -204,27 +206,32 @@ def _copy_lines_between_files(in_, fout, n=None, skip=0, mode='a', terminal_line
 	# on old Python st_mtime is int, so we should give at least 1 sec so
 	# polling filter could detect the change
 	mtimesleep()
+	if terminal_line is not None:
+		terminal_line = uni_bytes(terminal_line)
 	if isinstance(in_, str): # pragma: no branch - only used with str in test cases
 		fin = open(in_, 'rb')
 	else:
 		fin = in_
 	# Skip
-	for i in xrange(skip):
+	for i in range(skip):
 		fin.readline()
 	# Read
 	i = 0
-	if not lines: lines = []
+	if lines:
+		lines = list(map(uni_bytes, lines))
+	else:
+		lines = []
 	while n is None or i < n:
-		l = fin.readline().decode('UTF-8', 'replace').rstrip('\r\n')
+		l = fin.readline().rstrip(b'\r\n')
 		if terminal_line is not None and l == terminal_line:
 			break
 		lines.append(l)
 		i += 1
 	# Write: all at once and flush
 	if isinstance(fout, str):
-		fout = open(fout, mode)
+		fout = open(fout, mode+'b')
 	DefLogSys.debug('  ++ write %d test lines', len(lines))
-	fout.write('\n'.join(lines)+'\n')
+	fout.write(b'\n'.join(lines)+b'\n')
 	fout.flush()
 	if isinstance(in_, str): # pragma: no branch - only used with str in test cases
 		# Opened earlier, therefore must close it
@@ -250,7 +257,7 @@ def _copy_lines_to_journal(in_, fields={},n=None, skip=0, terminal_line=""): # p
 	# Required for filtering
 	fields.update(TEST_JOURNAL_FIELDS)
 	# Skip
-	for i in xrange(skip):
+	for i in range(skip):
 		fin.readline()
 	# Read/Write
 	i = 0
@@ -312,18 +319,18 @@ class BasicFilter(unittest.TestCase):
 	def testTest_tm(self):
 		unittest.F2B.SkipIfFast()
 		## test function "_tm" works correct (returns the same as slow strftime):
-		for i in xrange(1417512352, (1417512352 // 3600 + 3) * 3600):
+		for i in range(1417512352, (1417512352 // 3600 + 3) * 3600):
 			tm = MyTime.time2str(i)
 			if _tm(i) != tm: # pragma: no cover - never reachable
 				self.assertEqual((_tm(i), i), (tm, i))
 
 	def testWrongCharInTupleLine(self):
 		## line tuple has different types (ascii after ascii / unicode):
-		for a1 in ('', u'', b''):
-			for a2 in ('2016-09-05T20:18:56', u'2016-09-05T20:18:56', b'2016-09-05T20:18:56'):
+		for a1 in ('', '', b''):
+			for a2 in ('2016-09-05T20:18:56', '2016-09-05T20:18:56', b'2016-09-05T20:18:56'):
 				for a3 in (
 					'Fail for "g\xc3\xb6ran" from 192.0.2.1', 
-					u'Fail for "g\xc3\xb6ran" from 192.0.2.1',
+					'Fail for "g\xc3\xb6ran" from 192.0.2.1',
 					b'Fail for "g\xc3\xb6ran" from 192.0.2.1'
 				):
 					# join should work if all arguments have the same type:
@@ -510,7 +517,7 @@ class IgnoreIP(LogCaptureTestCase):
 
 	def testAddAttempt(self):
 		self.filter.setMaxRetry(3)
-		for i in xrange(1, 1+3):
+		for i in range(1, 1+3):
 			self.filter.addAttempt('192.0.2.1')
 			self.assertLogged('Attempt 192.0.2.1', '192.0.2.1:%d' % i, all=True, wait=True)
 		self.jail.actions._Actions__checkBan()
@@ -547,7 +554,7 @@ class IgnoreIP(LogCaptureTestCase):
 		# like both test-cases above, just cached (so once per key)...
 		self.filter.ignoreCache = {"key":"<ip>"}
 		self.filter.ignoreCommand = 'if [ "<ip>" = "10.0.0.1" ]; then exit 0; fi; exit 1'
-		for i in xrange(5):
+		for i in range(5):
 			self.pruneLog()
 			self.assertTrue(self.filter.inIgnoreIPList("10.0.0.1"))
 			self.assertFalse(self.filter.inIgnoreIPList("10.0.0.0"))
@@ -558,7 +565,7 @@ class IgnoreIP(LogCaptureTestCase):
 		# by host of IP:
 		self.filter.ignoreCache = {"key":"<ip-host>"}
 		self.filter.ignoreCommand = 'if [ "<ip-host>" = "test-host" ]; then exit 0; fi; exit 1'
-		for i in xrange(5):
+		for i in range(5):
 			self.pruneLog()
 			self.assertTrue(self.filter.inIgnoreIPList(FailTicket("2001:db8::1")))
 			self.assertFalse(self.filter.inIgnoreIPList(FailTicket("2001:db8::ffff")))
@@ -570,7 +577,7 @@ class IgnoreIP(LogCaptureTestCase):
 		self.filter.ignoreCache = {"key":"<F-USER>", "max-count":"10", "max-time":"1h"}
 		self.assertEqual(self.filter.ignoreCache, ["<F-USER>", 10, 60*60])
 		self.filter.ignoreCommand = 'if [ "<F-USER>" = "tester" ]; then exit 0; fi; exit 1'
-		for i in xrange(5):
+		for i in range(5):
 			self.pruneLog()
 			self.assertTrue(self.filter.inIgnoreIPList(FailTicket("tester", data={'user': 'tester'})))
 			self.assertFalse(self.filter.inIgnoreIPList(FailTicket("root", data={'user': 'root'})))
@@ -673,7 +680,7 @@ class LogFile(LogCaptureTestCase):
 
 	def testDecodeLineWarn(self):
 		# incomplete line (missing byte at end), warning is suppressed:
-		l = u"correct line\n"
+		l = "correct line\n"
 		r = l.encode('utf-16le')
 		self.assertEqual(FileContainer.decode_line('TESTFILE', 'utf-16le', r), l)
 		self.assertEqual(FileContainer.decode_line('TESTFILE', 'utf-16le', r[0:-1]), l[0:-1])
@@ -711,7 +718,7 @@ class LogFileFilterPoll(unittest.TestCase):
 		self.filter.setDatePattern(r'^%ExY-%Exm-%Exd %ExH:%ExM:%ExS')
 		fname = tempfile.mktemp(prefix='tmp_fail2ban', suffix='.log')
 		time = 1417512352
-		f = open(fname, 'w')
+		f = open(fname, 'wb')
 		fc = None
 		try:
 			fc = FileContainer(fname, self.filter.getLogEncoding())
@@ -722,7 +729,7 @@ class LogFileFilterPoll(unittest.TestCase):
 			fc.setPos(0); self.filter.seekToTime(fc, time)
 			self.assertEqual(fc.getPos(), 0)
 			# one entry with exact time:
-			f.write("%s [sshd] error: PAM: failure len 1\n" % _tm(time))
+			f.write(b"%s [sshd] error: PAM: failure len 1\n" % _tmb(time))
 			f.flush()
 			fc.setPos(0); self.filter.seekToTime(fc, time)
 
@@ -733,8 +740,8 @@ class LogFileFilterPoll(unittest.TestCase):
 			fc = FileContainer(fname, self.filter.getLogEncoding())
 			fc.open()
 			# no time - nothing should be found :
-			for i in xrange(10):
-				f.write("[sshd] error: PAM: failure len 1\n")
+			for i in range(10):
+				f.write(b"[sshd] error: PAM: failure len 1\n")
 				f.flush()
 				fc.setPos(0); self.filter.seekToTime(fc, time)
 
@@ -745,38 +752,38 @@ class LogFileFilterPoll(unittest.TestCase):
 			fc = FileContainer(fname, self.filter.getLogEncoding())
 			fc.open()
 			# one entry with smaller time:
-			f.write("%s [sshd] error: PAM: failure len 2\n" % _tm(time - 10))
+			f.write(b"%s [sshd] error: PAM: failure len 2\n" % _tmb(time - 10))
 			f.flush()
 			fc.setPos(0); self.filter.seekToTime(fc, time)
 			self.assertEqual(fc.getPos(), 53)
 			# two entries with smaller time:
-			f.write("%s [sshd] error: PAM: failure len 3 2 1\n" % _tm(time - 9))
+			f.write(b"%s [sshd] error: PAM: failure len 3 2 1\n" % _tmb(time - 9))
 			f.flush()
 			fc.setPos(0); self.filter.seekToTime(fc, time)
 			self.assertEqual(fc.getPos(), 110)
 			# check move after end (all of time smaller):
-			f.write("%s [sshd] error: PAM: failure\n" % _tm(time - 1))
+			f.write(b"%s [sshd] error: PAM: failure\n" % _tmb(time - 1))
 			f.flush()
 			self.assertEqual(fc.getFileSize(), 157)
 			fc.setPos(0); self.filter.seekToTime(fc, time)
 			self.assertEqual(fc.getPos(), 157)
 
 			# stil one exact line:
-			f.write("%s [sshd] error: PAM: Authentication failure\n" % _tm(time))
-			f.write("%s [sshd] error: PAM: failure len 1\n" % _tm(time))
+			f.write(b"%s [sshd] error: PAM: Authentication failure\n" % _tmb(time))
+			f.write(b"%s [sshd] error: PAM: failure len 1\n" % _tmb(time))
 			f.flush()
 			fc.setPos(0); self.filter.seekToTime(fc, time)
 			self.assertEqual(fc.getPos(), 157)
 
 			# add something hereafter:
-			f.write("%s [sshd] error: PAM: failure len 3 2 1\n" % _tm(time + 2))
-			f.write("%s [sshd] error: PAM: Authentication failure\n" % _tm(time + 3))
+			f.write(b"%s [sshd] error: PAM: failure len 3 2 1\n" % _tmb(time + 2))
+			f.write(b"%s [sshd] error: PAM: Authentication failure\n" % _tmb(time + 3))
 			f.flush()
 			fc.setPos(0); self.filter.seekToTime(fc, time)
 			self.assertEqual(fc.getPos(), 157)
 			# add something hereafter:
-			f.write("%s [sshd] error: PAM: failure\n" % _tm(time + 9))
-			f.write("%s [sshd] error: PAM: failure len 4 3 2\n" % _tm(time + 9))
+			f.write(b"%s [sshd] error: PAM: failure\n" % _tmb(time + 9))
+			f.write(b"%s [sshd] error: PAM: failure len 4 3 2\n" % _tmb(time + 9))
 			f.flush()
 			fc.setPos(0); self.filter.seekToTime(fc, time)
 			self.assertEqual(fc.getPos(), 157)
@@ -797,7 +804,7 @@ class LogFileFilterPoll(unittest.TestCase):
 		self.filter.setDatePattern(r'^%ExY-%Exm-%Exd %ExH:%ExM:%ExS')
 		fname = tempfile.mktemp(prefix='tmp_fail2ban', suffix='.log')
 		time = 1417512352
-		f = open(fname, 'w')
+		f = open(fname, 'wb')
 		fc = None
 		count = 1000 if unittest.F2B.fast else 10000
 		try:
@@ -807,15 +814,15 @@ class LogFileFilterPoll(unittest.TestCase):
 			# variable length of file (ca 45K or 450K before and hereafter):
 			# write lines with smaller as search time:
 			t = time - count - 1
-			for i in xrange(count):
-				f.write("%s [sshd] error: PAM: failure\n" % _tm(t))
+			for i in range(count):
+				f.write(b"%s [sshd] error: PAM: failure\n" % _tmb(t))
 				t += 1
 			f.flush()
 			fc.setPos(0); self.filter.seekToTime(fc, time)
 			self.assertEqual(fc.getPos(), 47*count)
 			# write lines with exact search time:
-			for i in xrange(10):
-				f.write("%s [sshd] error: PAM: failure\n" % _tm(time))
+			for i in range(10):
+				f.write(b"%s [sshd] error: PAM: failure\n" % _tmb(time))
 			f.flush()
 			fc.setPos(0); self.filter.seekToTime(fc, time)
 			self.assertEqual(fc.getPos(), 47*count)
@@ -823,9 +830,9 @@ class LogFileFilterPoll(unittest.TestCase):
 			self.assertEqual(fc.getPos(), 47*count)
 			# write lines with greater as search time:
 			t = time+1
-			for i in xrange(count//500):
-				for j in xrange(500):
-					f.write("%s [sshd] error: PAM: failure\n" % _tm(t))
+			for i in range(count//500):
+				for j in range(500):
+					f.write(b"%s [sshd] error: PAM: failure\n" % _tmb(t))
 					t += 1
 				f.flush()
 				fc.setPos(0); self.filter.seekToTime(fc, time)
@@ -847,7 +854,7 @@ class LogFileMonitor(LogCaptureTestCase):
 		LogCaptureTestCase.setUp(self)
 		self.filter = self.name = 'NA'
 		_, self.name = tempfile.mkstemp('fail2ban', 'monitorfailures')
-		self.file = open(self.name, 'a')
+		self.file = open(self.name, 'ab')
 		self.filter = FilterPoll(DummyJail())
 		self.filter.addLogPath(self.name, autoSeek=False)
 		self.filter.active = True
@@ -899,7 +906,7 @@ class LogFileMonitor(LogCaptureTestCase):
 		_org_processLine = self.filter.processLine
 		self.filter.processLine = None
 		for i in range(100):
-			self.file.write("line%d\n" % 1)
+			self.file.write(b"line%d\n" % 1)
 		self.file.flush()
 		for i in range(100):
 			self.filter.getFailures(self.name)
@@ -910,7 +917,7 @@ class LogFileMonitor(LogCaptureTestCase):
 		self.filter.idle = False
 		self.filter.getFailures(self.name)
 		self.filter.processLine = _org_processLine
-		self.file.write("line%d\n" % 1)
+		self.file.write(b"line%d\n" % 1)
 		self.file.flush()
 		self.filter.getFailures(self.name)
 		self.assertNotLogged('Failed to process line:')
@@ -934,7 +941,7 @@ class LogFileMonitor(LogCaptureTestCase):
 		mtimesleep()				# to guarantee freshier mtime
 		for i in range(4):			  # few changes
 			# unless we write into it
-			self.file.write("line%d\n" % i)
+			self.file.write(b"line%d\n" % i)
 			self.file.flush()
 			self.assertTrue(self.isModified())
 			self.assertTrue(self.notModified())
@@ -943,11 +950,11 @@ class LogFileMonitor(LogCaptureTestCase):
 		# we are not signaling as modified whenever
 		# it gets away
 		self.assertTrue(self.notModified(1))
-		f = open(self.name, 'a')
+		f = open(self.name, 'ab')
 		self.assertTrue(self.isModified())
 		self.assertTrue(self.notModified())
 		mtimesleep()
-		f.write("line%d\n" % i)
+		f.write(b"line%d\n" % i)
 		f.flush()
 		self.assertTrue(self.isModified())
 		self.assertTrue(self.notModified())
@@ -1077,7 +1084,7 @@ def get_monitor_failures_testcase(Filter_):
 			self.filter = self.name = 'NA'
 			self.name = '%s-%d' % (testclass_name, self.count)
 			MonitorFailures.count += 1 # so we have unique filenames across tests
-			self.file = open(self.name, 'a')
+			self.file = open(self.name, 'ab')
 			self.jail = DummyJail()
 			self.filter = Filter_(self.jail)
 			# mock-up common error to find catched unhandled exceptions:
@@ -1460,7 +1467,7 @@ def get_monitor_failures_journal_testcase(Filter_): # pragma: systemd no cover
 			self.assertTrue(ticket)
 
 			attempts = ticket.getAttempt()
-			ip = ticket.getIP()
+			ip = ticket.getID()
 			ticket.getMatches()
 
 			self.assertEqual(ip, test_ip)
@@ -1634,10 +1641,10 @@ def get_monitor_failures_journal_testcase(Filter_): # pragma: systemd no cover
 			# Add direct utf, unicode, blob:
 			for l in (
 		    "error: PAM: Authentication failure for \xe4\xf6\xfc\xdf from 192.0.2.1",
-		   u"error: PAM: Authentication failure for \xe4\xf6\xfc\xdf from 192.0.2.1",
+		   "error: PAM: Authentication failure for \xe4\xf6\xfc\xdf from 192.0.2.1",
 		   b"error: PAM: Authentication failure for \xe4\xf6\xfc\xdf from 192.0.2.1".decode('utf-8', 'replace'),
 		    "error: PAM: Authentication failure for \xc3\xa4\xc3\xb6\xc3\xbc\xc3\x9f from 192.0.2.2",
-		   u"error: PAM: Authentication failure for \xc3\xa4\xc3\xb6\xc3\xbc\xc3\x9f from 192.0.2.2",
+		   "error: PAM: Authentication failure for \xc3\xa4\xc3\xb6\xc3\xbc\xc3\x9f from 192.0.2.2",
 		   b"error: PAM: Authentication failure for \xc3\xa4\xc3\xb6\xc3\xbc\xc3\x9f from 192.0.2.2".decode('utf-8', 'replace')
 			):
 				fields = self.journal_fields
@@ -1646,7 +1653,7 @@ def get_monitor_failures_journal_testcase(Filter_): # pragma: systemd no cover
 			self.waitForTicks(1)
 			self.waitFailTotal(6, 10)
 			self.assertTrue(Utils.wait_for(lambda: len(self.jail) == 2, 10))
-			self.assertSortedEqual([self.jail.getFailTicket().getIP(), self.jail.getFailTicket().getIP()], 
+			self.assertSortedEqual([self.jail.getFailTicket().getID(), self.jail.getFailTicket().getID()], 
 				["192.0.2.1", "192.0.2.2"])
 
 	cls = MonitorJournalFailures
@@ -1666,7 +1673,7 @@ class GetFailures(LogCaptureTestCase):
 
 	# so that they could be reused by other tests
 	FAILURES_01 = ('193.168.0.128', 3, 1124013599.0,
-				  [u'Aug 14 11:59:59 [sshd] error: PAM: Authentication failure for kevin from 193.168.0.128']*3)
+				  ['Aug 14 11:59:59 [sshd] error: PAM: Authentication failure for kevin from 193.168.0.128']*3)
 
 	def setUp(self):
 		"""Call before every test case."""
@@ -1752,8 +1759,8 @@ class GetFailures(LogCaptureTestCase):
 				# test on unicode string containing \x0A as part of uni-char,
 				# it must produce exactly 2 lines (both are failures):
 				for l in (
-					u'%s \u20AC Failed auth: invalid user Test\u020A from 192.0.2.1\n' % tm,
-					u'%s \u20AC Failed auth: invalid user TestI from 192.0.2.2\n' % tm
+					'%s \u20AC Failed auth: invalid user Test\u020A from 192.0.2.1\n' % tm,
+					'%s \u20AC Failed auth: invalid user TestI from 192.0.2.2\n' % tm
 				):
 					fout.write(l.encode(enc))
 				fout.close()
@@ -1774,8 +1781,8 @@ class GetFailures(LogCaptureTestCase):
 
 	def testGetFailures02(self):
 		output = ('141.3.81.106', 4, 1124013539.0,
-				  [u'Aug 14 11:%d:59 i60p295 sshd[12365]: Failed publickey for roehl from ::ffff:141.3.81.106 port 51332 ssh2'
-				   % m for m in 53, 54, 57, 58])
+				  ['Aug 14 11:%d:59 i60p295 sshd[12365]: Failed publickey for roehl from ::ffff:141.3.81.106 port 51332 ssh2'
+				   % m for m in (53, 54, 57, 58)])
 
 		self.filter.setMaxRetry(4)
 		self.filter.addLogPath(GetFailures.FILENAME_02, autoSeek=0)
@@ -1882,23 +1889,25 @@ class GetFailures(LogCaptureTestCase):
 			_killfile(fout, fname)
 
 	def testGetFailuresUseDNS(self):
-		unittest.F2B.SkipIfNoNetwork()
+		#unittest.F2B.SkipIfNoNetwork() ## without network it is simulated via cache in utils.
 		# We should still catch failures with usedns = no ;-)
 		output_yes = (
 			('93.184.216.34', 1, 1124013299.0,
-			  [u'Aug 14 11:54:59 i60p295 sshd[12365]: Failed publickey for roehl from example.com port 51332 ssh2']
+			  ['Aug 14 11:54:59 i60p295 sshd[12365]: Failed publickey for roehl from example.com port 51332 ssh2']
 			),
 			('93.184.216.34', 1, 1124013539.0,
-			  [u'Aug 14 11:58:59 i60p295 sshd[12365]: Failed publickey for roehl from ::ffff:93.184.216.34 port 51332 ssh2']
+			  ['Aug 14 11:58:59 i60p295 sshd[12365]: Failed publickey for roehl from ::ffff:93.184.216.34 port 51332 ssh2']
 			),
 			('2606:2800:220:1:248:1893:25c8:1946', 1, 1124013299.0,
-			  [u'Aug 14 11:54:59 i60p295 sshd[12365]: Failed publickey for roehl from example.com port 51332 ssh2']
+			  ['Aug 14 11:54:59 i60p295 sshd[12365]: Failed publickey for roehl from example.com port 51332 ssh2']
 			),
 		)
+		if not unittest.F2B.no_network and not DNSUtils.IPv6IsAllowed():
+			output_yes = output_yes[0:2]
 
 		output_no = (
 			('93.184.216.34', 1, 1124013539.0,
-			  [u'Aug 14 11:58:59 i60p295 sshd[12365]: Failed publickey for roehl from ::ffff:93.184.216.34 port 51332 ssh2']
+			  ['Aug 14 11:58:59 i60p295 sshd[12365]: Failed publickey for roehl from ::ffff:93.184.216.34 port 51332 ssh2']
 			)
 		)
 
@@ -2004,9 +2013,9 @@ class DNSUtilsTests(unittest.TestCase):
 		self.assertTrue(c.get('a') is None)
 		self.assertEqual(c.get('a', 'test'), 'test')
 		# exact 5 elements :
-		for i in xrange(5):
+		for i in range(5):
 			c.set(i, i)
-		for i in xrange(5):
+		for i in range(5):
 			self.assertEqual(c.get(i), i)
 		# remove unavailable key:
 		c.unset('a'); c.unset('a')
@@ -2014,30 +2023,30 @@ class DNSUtilsTests(unittest.TestCase):
 	def testCacheMaxSize(self):
 		c = Utils.Cache(maxCount=5, maxTime=60)
 		# exact 5 elements :
-		for i in xrange(5):
+		for i in range(5):
 			c.set(i, i)
-		self.assertEqual([c.get(i) for i in xrange(5)], [i for i in xrange(5)])
-		self.assertNotIn(-1, (c.get(i, -1) for i in xrange(5)))
+		self.assertEqual([c.get(i) for i in range(5)], [i for i in range(5)])
+		self.assertNotIn(-1, (c.get(i, -1) for i in range(5)))
 		# add one - too many:
 		c.set(10, i)
 		# one element should be removed :
-		self.assertIn(-1, (c.get(i, -1) for i in xrange(5)))
+		self.assertIn(-1, (c.get(i, -1) for i in range(5)))
 		# test max size (not expired):
-		for i in xrange(10):
+		for i in range(10):
 			c.set(i, 1)
 		self.assertEqual(len(c), 5)
 
 	def testCacheMaxTime(self):
 		# test max time (expired, timeout reached) :
 		c = Utils.Cache(maxCount=5, maxTime=0.0005)
-		for i in xrange(10):
+		for i in range(10):
 			c.set(i, 1)
 		st = time.time()
 		self.assertTrue(Utils.wait_for(lambda: time.time() >= st + 0.0005, 1))
 		# we have still 5 elements (or fewer if too slow test mashine):
 		self.assertTrue(len(c) <= 5)
 		# but all that are expiered also:
-		for i in xrange(10):
+		for i in range(10):
 			self.assertTrue(c.get(i) is None)
 		# here the whole cache should be empty:
 		self.assertEqual(len(c), 0)
@@ -2058,7 +2067,7 @@ class DNSUtilsTests(unittest.TestCase):
 					c = count
 					while c:
 						c -= 1
-						s = xrange(0, 256, 1) if forw else xrange(255, -1, -1)
+						s = range(0, 256, 1) if forw else range(255, -1, -1)
 						if random: shuffle([i for i in s])
 						for i in s:
 							IPAddr('192.0.2.'+str(i), IPAddr.FAM_IPv4)
@@ -2089,6 +2098,12 @@ class DNSUtilsNetworkTests(unittest.TestCase):
 		super(DNSUtilsNetworkTests, self).setUp()
 		#unittest.F2B.SkipIfNoNetwork()
 
+	## example.com IPs considering IPv6 support (without network it is simulated via cache in utils).
+	EXAMPLE_ADDRS = (
+		['93.184.216.34', '2606:2800:220:1:248:1893:25c8:1946'] if unittest.F2B.no_network or DNSUtils.IPv6IsAllowed() else \
+		['93.184.216.34']
+	)
+
 	def test_IPAddr(self):
 		ip4 = IPAddr('192.0.2.1')
 		ip6 = IPAddr('2001:DB8::')
@@ -2098,6 +2113,20 @@ class DNSUtilsNetworkTests(unittest.TestCase):
 		self.assertTrue(ip6.isSingle)
 		self.assertTrue(asip('192.0.2.1').isIPv4)
 		self.assertTrue(id(asip(ip4)) == id(ip4))
+		# ::
+		ip6 = IPAddr('::')
+		self.assertTrue(ip6.isIPv6)
+		self.assertTrue(ip6.isSingle)
+		# ::/32
+		ip6 = IPAddr('::/32')
+		self.assertTrue(ip6.isIPv6)
+		self.assertFalse(ip6.isSingle)
+		# path as ID, conversion as unspecified, fallback to raw (cover confusion with the /CIDR):
+		for s in ('some/path/as/id', 'other-path/24', '1.2.3.4/path'):
+			r = IPAddr(s, IPAddr.CIDR_UNSPEC)
+			self.assertEqual(r.raw, s)
+			self.assertFalse(r.isIPv4)
+			self.assertFalse(r.isIPv6)
 
 	def test_IPAddr_Raw(self):
 		# raw string:
@@ -2136,16 +2165,16 @@ class DNSUtilsNetworkTests(unittest.TestCase):
 	def testUseDns(self):
 		res = DNSUtils.textToIp('www.example.com', 'no')
 		self.assertSortedEqual(res, [])
-		#unittest.F2B.SkipIfNoNetwork()
+		#unittest.F2B.SkipIfNoNetwork() ## without network it is simulated via cache in utils.
 		res = DNSUtils.textToIp('www.example.com', 'warn')
 		# sort ipaddr, IPv4 is always smaller as IPv6
-		self.assertSortedEqual(res, ['93.184.216.34', '2606:2800:220:1:248:1893:25c8:1946'])
+		self.assertSortedEqual(res, self.EXAMPLE_ADDRS)
 		res = DNSUtils.textToIp('www.example.com', 'yes')
 		# sort ipaddr, IPv4 is always smaller as IPv6
-		self.assertSortedEqual(res, ['93.184.216.34', '2606:2800:220:1:248:1893:25c8:1946'])
+		self.assertSortedEqual(res, self.EXAMPLE_ADDRS)
 
 	def testTextToIp(self):
-		#unittest.F2B.SkipIfNoNetwork()
+		#unittest.F2B.SkipIfNoNetwork() ## without network it is simulated via cache in utils.
 		# Test hostnames
 		hostnames = [
 			'www.example.com',
@@ -2156,13 +2185,14 @@ class DNSUtilsNetworkTests(unittest.TestCase):
 			res = DNSUtils.textToIp(s, 'yes')
 			if s == 'www.example.com':
 				# sort ipaddr, IPv4 is always smaller as IPv6
-				self.assertSortedEqual(res, ['93.184.216.34', '2606:2800:220:1:248:1893:25c8:1946'])
+				self.assertSortedEqual(res, self.EXAMPLE_ADDRS)
 			else:
 				self.assertSortedEqual(res, [])
 
 	def testIpToIp(self):
 		# pure ips:
-		for s in ('93.184.216.34', '2606:2800:220:1:248:1893:25c8:1946'):
+		for s in self.EXAMPLE_ADDRS:
+			#if DNSUtils.IPv6IsAllowed(): continue
 			ips = DNSUtils.textToIp(s, 'yes')
 			self.assertSortedEqual(ips, [s])
 			for ip in ips:
@@ -2184,16 +2214,16 @@ class DNSUtilsNetworkTests(unittest.TestCase):
 
 	def testAddr2bin(self):
 		res = IPAddr('10.0.0.0')
-		self.assertEqual(res.addr, 167772160L)
+		self.assertEqual(res.addr, 167772160)
 		res = IPAddr('10.0.0.0', cidr=None)
-		self.assertEqual(res.addr, 167772160L)
-		res = IPAddr('10.0.0.0', cidr=32L)
-		self.assertEqual(res.addr, 167772160L)
-		res = IPAddr('10.0.0.1', cidr=32L)
-		self.assertEqual(res.addr, 167772161L)
+		self.assertEqual(res.addr, 167772160)
+		res = IPAddr('10.0.0.0', cidr=32)
+		self.assertEqual(res.addr, 167772160)
+		res = IPAddr('10.0.0.1', cidr=32)
+		self.assertEqual(res.addr, 167772161)
 		self.assertTrue(res.isSingle)
-		res = IPAddr('10.0.0.1', cidr=31L)
-		self.assertEqual(res.addr, 167772160L)
+		res = IPAddr('10.0.0.1', cidr=31)
+		self.assertEqual(res.addr, 167772160)
 		self.assertFalse(res.isSingle)
 
 		self.assertEqual(IPAddr('10.0.0.0').hexdump, '0a000000')
@@ -2236,6 +2266,18 @@ class DNSUtilsNetworkTests(unittest.TestCase):
 		self.assertFalse(IPAddr('2606:2800:220:1:248:1893:25c8:1', IPAddr.CIDR_RAW).isInNet(ip6net))
 		# invalid not in net:
 		self.assertFalse(IPAddr('xxx').isInNet(ip4net))
+		# different forms in ::/32:
+		ip6net = IPAddr('::/32')
+		self.assertTrue(IPAddr('::').isInNet(ip6net))
+		self.assertTrue(IPAddr('::1').isInNet(ip6net))
+		self.assertTrue(IPAddr('0000::').isInNet(ip6net))
+		self.assertTrue(IPAddr('0000::0000').isInNet(ip6net))
+		self.assertTrue(IPAddr('0000:0000:7777::').isInNet(ip6net))
+		self.assertTrue(IPAddr('0000::7777:7777:7777:7777:7777:7777').isInNet(ip6net))
+		self.assertTrue(IPAddr('0000:0000:ffff::').isInNet(ip6net))
+		self.assertTrue(IPAddr('0000::ffff:ffff:ffff:ffff:ffff:ffff').isInNet(ip6net))
+		self.assertFalse(IPAddr('0000:0001:ffff::').isInNet(ip6net))
+		self.assertFalse(IPAddr('1::').isInNet(ip6net))
 
 	def testIPAddr_Compare(self):
 		ip4 = [
@@ -2272,9 +2314,9 @@ class DNSUtilsNetworkTests(unittest.TestCase):
 			'93.184.216.34': 'ip4-test', 
 			'2606:2800:220:1:248:1893:25c8:1946': 'ip6-test'
 		}
-		d2 = dict([(IPAddr(k), v) for k, v in d.iteritems()])
-		self.assertTrue(isinstance(d.keys()[0], basestring))
-		self.assertTrue(isinstance(d2.keys()[0], IPAddr))
+		d2 = dict([(IPAddr(k), v) for k, v in d.items()])
+		self.assertTrue(isinstance(list(d.keys())[0], str))
+		self.assertTrue(isinstance(list(d2.keys())[0], IPAddr))
 		self.assertEqual(d.get(ip4[2], ''), 'ip4-test')
 		self.assertEqual(d.get(ip6[2], ''), 'ip6-test')
 		self.assertEqual(d2.get(str(ip4[2]), ''), 'ip4-test')
@@ -2308,7 +2350,11 @@ class DNSUtilsNetworkTests(unittest.TestCase):
 
 	def testIPAddr_CIDR_Wrong(self):
 		# too many plen representations:
-		self.assertRaises(ValueError, IPAddr, '2606:28ff:220:1:248:1893:25c8::/ffff::/::1')
+		s = '2606:28ff:220:1:248:1893:25c8::/ffff::/::1'
+		r = IPAddr(s)
+		self.assertEqual(r.raw, s)
+		self.assertFalse(r.isIPv4)
+		self.assertFalse(r.isIPv6)
 
 	def testIPAddr_CIDR_Repr(self):
 		self.assertEqual(["127.0.0.0/8", "::/32", "2001:db8::/32"],
@@ -2316,10 +2362,11 @@ class DNSUtilsNetworkTests(unittest.TestCase):
 		)
 
 	def testIPAddr_CompareDNS(self):
-		#unittest.F2B.SkipIfNoNetwork()
+		#unittest.F2B.SkipIfNoNetwork() ## without network it is simulated via cache in utils.
 		ips = IPAddr('example.com')
 		self.assertTrue(IPAddr("93.184.216.34").isInNet(ips))
-		self.assertTrue(IPAddr("2606:2800:220:1:248:1893:25c8:1946").isInNet(ips))
+		self.assertEqual(IPAddr("2606:2800:220:1:248:1893:25c8:1946").isInNet(ips),
+		                        "2606:2800:220:1:248:1893:25c8:1946" in self.EXAMPLE_ADDRS)
 
 	def testIPAddr_wrongDNS_IP(self):
 		unittest.F2B.SkipIfNoNetwork()
@@ -2332,6 +2379,51 @@ class DNSUtilsNetworkTests(unittest.TestCase):
 			self.assertEqual(id(ip1), id(ip2))
 		ip1 = IPAddr('93.184.216.34'); ip2 = IPAddr('93.184.216.34'); self.assertEqual(id(ip1), id(ip2))
 		ip1 = IPAddr('2606:2800:220:1:248:1893:25c8:1946'); ip2 = IPAddr('2606:2800:220:1:248:1893:25c8:1946'); self.assertEqual(id(ip1), id(ip2))
+
+	def test_NetworkInterfacesAddrs(self):
+		for withMask in (False, True):
+			try:
+				ips = IPAddrSet([a for ni, a in DNSUtils._NetworkInterfacesAddrs(withMask)])
+				ip = IPAddr('127.0.0.1')
+				self.assertEqual(ip in ips, any(ip in n for n in ips))
+				ip = IPAddr('::1')
+				self.assertEqual(ip in ips, any(ip in n for n in ips))
+			except Exception as e: # pragma: no cover
+				# simply skip if not available, TODO: make coverage platform dependent
+				raise unittest.SkipTest(e)
+
+	def test_IPAddrSet(self):
+		ips = IPAddrSet([IPAddr('192.0.2.1/27'), IPAddr('2001:DB8::/32')])
+		self.assertTrue(IPAddr('192.0.2.1') in ips)
+		self.assertTrue(IPAddr('192.0.2.31') in ips)
+		self.assertFalse(IPAddr('192.0.2.32') in ips)
+		self.assertTrue(IPAddr('2001:DB8::1') in ips)
+		self.assertTrue(IPAddr('2001:0DB8:FFFF:FFFF:FFFF:FFFF:FFFF:FFFF') in ips)
+		self.assertFalse(IPAddr('2001:DB9::') in ips)
+		# self IPs must be a set too (cover different mechanisms to obtain own IPs):
+		for cov in ('ni', 'dns', 'last'):
+			_org_NetworkInterfacesAddrs = None
+			if cov == 'dns': # mock-up _NetworkInterfacesAddrs like it's not implemented (raises error)
+				_org_NetworkInterfacesAddrs = DNSUtils._NetworkInterfacesAddrs
+				def _tmp_NetworkInterfacesAddrs():
+					raise NotImplementedError()
+				DNSUtils._NetworkInterfacesAddrs = staticmethod(_tmp_NetworkInterfacesAddrs)
+			try:
+				ips = DNSUtils.getSelfIPs()
+				# print('*****', ips)
+				if ips:
+					ip = IPAddr('127.0.0.1')
+					self.assertEqual(ip in ips, any(ip in n for n in ips))
+					ip = IPAddr('127.0.0.2')
+					self.assertEqual(ip in ips, any(ip in n for n in ips))
+					ip = IPAddr('::1')
+					self.assertEqual(ip in ips, any(ip in n for n in ips))
+			finally:
+				if _org_NetworkInterfacesAddrs:
+					DNSUtils._NetworkInterfacesAddrs = staticmethod(_org_NetworkInterfacesAddrs)
+				if cov != 'last':
+					DNSUtils.CACHE_nameToIp.unset(DNSUtils._getSelfIPs_key)
+					DNSUtils.CACHE_nameToIp.unset(DNSUtils._getNetIntrfIPs_key)
 
 	def testFQDN(self):
 		unittest.F2B.SkipIfNoNetwork()

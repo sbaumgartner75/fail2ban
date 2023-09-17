@@ -307,7 +307,7 @@ class Filter(JailThread):
 			dd = DateDetector()
 			dd.default_tz = self.__logtimezone
 			if not isinstance(pattern, (list, tuple)):
-				pattern = filter(bool, map(str.strip, re.split('\n+', pattern)))
+				pattern = list(filter(bool, list(map(str.strip, re.split('\n+', pattern)))))
 			for pattern in pattern:
 				dd.appendTemplate(pattern)
 			self.dateDetector = dd
@@ -553,7 +553,7 @@ class Filter(JailThread):
 		ticket = None
 		if isinstance(ip, FailTicket):
 			ticket = ip
-			ip = ticket.getIP()
+			ip = ticket.getID()
 		elif not isinstance(ip, IPAddr):
 			ip = IPAddr(ip)
 		return self._inIgnoreIPList(ip, ticket, log_ignore)
@@ -702,10 +702,7 @@ class Filter(JailThread):
 		"""Processes the line for failures and populates failManager
 		"""
 		try:
-			for element in self.processLine(line, date):
-				ip = element[1]
-				unixTime = element[2]
-				fail = element[3]
+			for (_, ip, unixTime, fail) in self.processLine(line, date):
 				logSys.debug("Processing line with time:%s and ip:%s", 
 						unixTime, ip)
 				# ensure the time is not in the future, e. g. by some estimated (assumed) time:
@@ -797,11 +794,13 @@ class Filter(JailThread):
 			# be sure we've correct current state ('nofail' and 'mlfgained' only from last failure)
 			if mlfidGroups.pop('nofail', None): nfflgs |= 4
 			if mlfidGroups.pop('mlfgained', None): nfflgs |= 4
+			# gained resets all pending failures (retaining users to check it later)
+			if nfflgs & 8: mlfidGroups.pop('mlfpending', None)
 			# if we had no pending failures then clear the matches (they are already provided):
 			if (nfflgs & 4) == 0 and not mlfidGroups.get('mlfpending', 0):
 				mlfidGroups.pop("matches", None)
 			# overwrite multi-line failure with all values, available in fail:
-			mlfidGroups.update(((k,v) for k,v in fail.iteritems() if v is not None))
+			mlfidGroups.update(((k,v) for k,v in fail.items() if v is not None))
 			# new merged failure data:
 			fail = mlfidGroups
 			# if forget (disconnect/reset) - remove cached entry:
@@ -841,11 +840,9 @@ class Filter(JailThread):
 		failList = list()
 
 		ll = logSys.getEffectiveLevel()
-		returnRawHost = self.returnRawHost
-		cidr = IPAddr.CIDR_UNSPEC
-		if self.__useDns == "raw":
-			returnRawHost = True
-			cidr = IPAddr.CIDR_RAW
+		defcidr = IPAddr.CIDR_UNSPEC
+		if self.__useDns == "raw" or self.returnRawHost:
+			defcidr = IPAddr.CIDR_RAW
 
 		if self.__lineBufferSize > 1:
 			self.__lineBuffer.append(tupleLine)
@@ -908,7 +905,8 @@ class Filter(JailThread):
 				if not self.checkAllRegex or self.__lineBufferSize > 1:
 					self.__lineBuffer, buf = failRegex.getUnmatchedTupleLines(), None
 				# merge data if multi-line failure:
-				raw = returnRawHost
+				cidr = defcidr
+				raw = (defcidr == IPAddr.CIDR_RAW)
 				if preGroups:
 					currFail, fail = fail, preGroups.copy()
 					fail.update(currFail)
@@ -927,49 +925,50 @@ class Filter(JailThread):
 				# failure-id:
 				fid = fail.get('fid')
 				# ip-address or host:
-				host = fail.get('ip4')
-				if host is not None:
+				ip = fail.get('ip4')
+				if ip is not None:
 					cidr = int(fail.get('cidr') or IPAddr.FAM_IPv4)
 					raw = True
 				else:
-					host = fail.get('ip6')
-					if host is not None:
+					ip = fail.get('ip6')
+					if ip is not None:
 						cidr = int(fail.get('cidr') or IPAddr.FAM_IPv6)
 						raw = True
-				if host is None:
-					host = fail.get('dns')
-					if host is None:
-						# first try to check we have mlfid case (cache connection id):
-						if fid is None and mlfid is None:
-								# if no failure-id also (obscure case, wrong regex), throw error inside getFailID:
-								fid = failRegex.getFailID()
-						host = fid
-						cidr = IPAddr.CIDR_RAW
-						raw = True
+					else:
+						ip = fail.get('dns')
+						if ip is None:
+							# first try to check we have mlfid case (cache connection id):
+							if fid is None and mlfid is None:
+									# if no failure-id also (obscure case, wrong regex), throw error inside getFailID:
+									fid = failRegex.getFailID()
+							ip = fid
+							raw = True
 				# if mlfid case (not failure):
-				if host is None:
+				if fid is None and ip is None:
 					if ll <= 7: logSys.log(7, "No failure-id by mlfid %r in regex %s: %s",
 						mlfid, failRegexIndex, fail.get('mlfforget', "waiting for identifier"))
 					fail['mlfpending'] = 1; # mark failure is pending
 					if not self.checkAllRegex and self.ignorePending: return failList
-					ips = [None]
+					fids = [None]
 				# if raw - add single ip or failure-id,
 				# otherwise expand host to multiple ips using dns (or ignore it if not valid):
 				elif raw:
-					ip = IPAddr(host, cidr)
-					# check host equal failure-id, if not - failure with complex id:
-					if fid is not None and fid != host:
-						ip = IPAddr(fid, IPAddr.CIDR_RAW)
-					ips = [ip]
+					# check ip/host equal failure-id, if not - failure with complex id:
+					if fid is None or fid == ip:
+						fid = IPAddr(ip, cidr)
+					else:
+						fail['ip'] = IPAddr(ip, cidr)
+						fid = IPAddr(fid, defcidr)
+					fids = [fid]
 				# otherwise, try to use dns conversion:
 				else:
-					ips = DNSUtils.textToIp(host, self.__useDns)
+					fids = DNSUtils.textToIp(ip, self.__useDns)
 				# if checkAllRegex we must make a copy (to be sure next RE doesn't change merged/cached failure):
 				if self.checkAllRegex and mlfid is not None:
 					fail = fail.copy()
 				# append failure with match to the list:
-				for ip in ips:
-					failList.append([failRegexIndex, ip, date, fail])
+				for fid in fids:
+					failList.append([failRegexIndex, fid, date, fail])
 				if not self.checkAllRegex:
 					break
 			except RegexException as e: # pragma: no cover - unsure if reachable
@@ -1046,7 +1045,7 @@ class FileFilter(Filter):
 	# @return log paths
 
 	def getLogPaths(self):
-		return self.__logs.keys()
+		return list(self.__logs.keys())
 
 	##
 	# Get the log containers
@@ -1054,7 +1053,7 @@ class FileFilter(Filter):
 	# @return log containers
 
 	def getLogs(self):
-		return self.__logs.values()
+		return list(self.__logs.values())
 
 	##
 	# Get the count of log containers
@@ -1080,7 +1079,7 @@ class FileFilter(Filter):
 
 	def setLogEncoding(self, encoding):
 		encoding = super(FileFilter, self).setLogEncoding(encoding)
-		for log in self.__logs.itervalues():
+		for log in self.__logs.values():
 			log.setEncoding(encoding)
 
 	def getLog(self, path):
@@ -1256,7 +1255,7 @@ class FileFilter(Filter):
 		"""Status of Filter plus files being monitored.
 		"""
 		ret = super(FileFilter, self).status(flavor=flavor)
-		path = self.__logs.keys()
+		path = list(self.__logs.keys())
 		ret.append(("File list", path))
 		return ret
 
@@ -1278,7 +1277,7 @@ class FileFilter(Filter):
 		if self._pendDBUpdates and self.jail.database:
 			self._updateDBPending()
 		# stop files monitoring:
-		for path in self.__logs.keys():
+		for path in list(self.__logs.keys()):
 			self.delLogPath(path)
 
 	def stop(self):
@@ -1531,7 +1530,7 @@ class FileContainer:
 
 	def __iter__(self):
 		return self
-	def next(self):
+	def __next__(self):
 		line = self.readline()
 		if line is None:
 			self.close()

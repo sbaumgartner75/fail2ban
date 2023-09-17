@@ -58,7 +58,7 @@ class Transmitter:
 			ret = self.__commandHandler(command)
 			ack = 0, ret
 		except Exception as e:
-			logSys.warning("Command %r has failed. Received %r",
+			logSys.error("Command %r has failed. Received %r",
 						command, e, 
 						exc_info=logSys.getEffectiveLevel()<=logging.DEBUG)
 			ack = 1, e
@@ -488,7 +488,7 @@ class Transmitter:
 			opt = command[1][len("bantime."):]
 			return self.__server.getBanTimeExtra(name, opt)
 		elif command[1] == "actions":
-			return self.__server.getActions(name).keys()
+			return list(self.__server.getActions(name).keys())
 		elif command[1] == "action":
 			actionname = command[2]
 			actionvalue = command[3]

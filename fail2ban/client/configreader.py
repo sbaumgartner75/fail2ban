@@ -26,7 +26,7 @@ __license__ = "GPL"
 
 import glob
 import os
-from ConfigParser import NoOptionError, NoSectionError
+from configparser import NoOptionError, NoSectionError
 
 from .configparserinc import sys, SafeConfigParserWithIncludes, logLevel
 from ..helpers import getLogger, _as_bool, _merge_dicts, substituteRecursiveTags
@@ -221,7 +221,7 @@ class ConfigReaderUnshared(SafeConfigParserWithIncludes):
 		config_files += sorted(glob.glob('%s/*.local' % config_dir))
 
 		# choose only existing ones
-		config_files = filter(os.path.exists, config_files)
+		config_files = list(filter(os.path.exists, config_files))
 
 		if len(config_files):
 			# at least one config exists and accessible
@@ -277,7 +277,7 @@ class ConfigReaderUnshared(SafeConfigParserWithIncludes):
 				# TODO: validate error handling here.
 			except NoOptionError:
 				if not optvalue is None:
-					logSys.warning("'%s' not defined in '%s'. Using default one: %r"
+					logSys.debug("'%s' not defined in '%s'. Using default one: %r"
 								% (optname, sec, optvalue))
 					values[optname] = optvalue
 				# elif logSys.getEffectiveLevel() <= logLevel:
